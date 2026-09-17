@@ -49,37 +49,42 @@ def safe_filename(name):
         name = name.replace(ch, "")
     return name
 
-def get_current_command_list():
+def get_current_command_list(quoted=True):
     source_file = source_var.get().strip().strip('"')
     lang_choice = lang_var.get()
     gui_type = gui_var.get()
     optimization = optimization_var.get()
-    
+
     use_custom_name = custom_name_var.get()
     custom_name = custom_name_strvar.get().strip()
     use_custom_path = custom_path_var.get()
     custom_path = custom_path_strvar.get().strip()
-    
+
     include_icon = include_icon_var.get()
     icon_path = icon_strvar.get().strip()
     mingw_bin = mingw_path_var.get().strip()
 
     compiler = os.path.join(mingw_bin, "gcc.exe") if lang_choice == "c" else os.path.join(mingw_bin, "g++.exe")
-    cmd = [f'"{compiler}"']
+
+    def q(s):
+        return f'"{s}"' if quoted else s
+
+    cmd = [q(compiler)]
+    output_path = None
 
     if source_file:
-        cmd.append(f'"{source_file}"')
-        
+        cmd.append(q(source_file))
+
         src_dir, src_name = os.path.split(source_file)
         base, _ = os.path.splitext(src_name)
         output_dir = custom_path if (use_custom_path and custom_path) else (src_dir or ".")
-        
+
         exe_name = safe_filename(custom_name) if (use_custom_name and custom_name) else base
         if not exe_name.lower().endswith(".exe"):
             exe_name += ".exe"
-            
+
         output_path = os.path.join(output_dir, exe_name)
-        cmd.extend(["-o", f'"{output_path}"'])
+        cmd.extend(["-o", q(output_path)])
     else:
         cmd.append("<source_file>")
         cmd.extend(["-o", "<output.exe>"])
@@ -99,12 +104,22 @@ def get_current_command_list():
     if include_icon and icon_path:
         cmd.append("<compiled_icon.res>")
 
-    return cmd
+    return cmd, output_path
+
+def get_strip_command_list(output_path, mingw_bin, quoted=True):
+    strip_path = os.path.join(mingw_bin, "strip.exe")
+    out = output_path if output_path else "<output.exe>"
+    if quoted:
+        return [f'"{strip_path}"', "--strip-all", f'"{out}"']
+    return [strip_path, "--strip-all", out]
 
 def update_preview(*args):
-    cmd = get_current_command_list()
-    cmd_string = " ".join(cmd)
-    
+    cmd, output_path = get_current_command_list(quoted=True)
+    mingw_bin = mingw_path_var.get().strip()
+    strip_cmd = get_strip_command_list(output_path, mingw_bin, quoted=True)
+
+    cmd_string = " ".join(cmd) + " && " + " ".join(strip_cmd)
+
     preview_text.config(state="normal")
     preview_text.delete("1.0", tk.END)
     preview_text.insert(tk.END, cmd_string)
@@ -121,8 +136,8 @@ def run_compile(source_file, use_custom_path, custom_path, include_icon, icon_pa
             messagebox.showerror("Error", "Invalid source file.")
             return
 
-        cmd = get_current_command_list()
-        
+        cmd, output_path = get_current_command_list(quoted=False)
+
         src_dir, _ = os.path.split(source_file)
         output_dir = custom_path if use_custom_path else (src_dir or ".")
         os.makedirs(output_dir, exist_ok=True)
@@ -130,24 +145,23 @@ def run_compile(source_file, use_custom_path, custom_path, include_icon, icon_pa
         if include_icon and icon_path:
             cmd.remove("<compiled_icon.res>")
             escaped_icon_path = icon_path.replace("\\", "\\\\")
-            
+
             with tempfile.NamedTemporaryFile(delete=False, suffix=".rc") as rc_file:
                 rc_file.write(f"IDI_ICON1 ICON \"{escaped_icon_path}\"".encode('utf-8'))
                 rc_file_path = rc_file.name
-                
+
             temp_res = rc_file_path.replace(".rc", ".res")
             subprocess.run([windres_path, rc_file_path, "-O", "coff", "-o", temp_res], check=True)
             cmd.append(temp_res)
 
-        print("\nRunning command:\n", " ".join(cmd), "\n")
+        print("\nRunning command:\n", cmd, "\n")
 
-        result = subprocess.run(" ".join(cmd), capture_output=True, text=True, shell=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, shell=False)
         if result.returncode != 0:
             messagebox.showerror("GCC Error", result.stderr or "Unknown error")
             return
 
-        out_index = cmd.index("-o") + 1
-        output_path_clean = cmd[out_index].strip('"')
+        output_path_clean = output_path
         subprocess.run([strip_path, "--strip-all", output_path_clean], check=False)
 
         messagebox.showinfo("Success", f"Compiled to:\n{output_path_clean}")
@@ -159,12 +173,12 @@ def run_compile(source_file, use_custom_path, custom_path, include_icon, icon_pa
         messagebox.showerror("Error", f"An unexpected error occurred:\n{e}")
     finally:
         if temp_res and os.path.exists(temp_res):
-            try: os.remove(temp_res) 
+            try: os.remove(temp_res)
             except: pass
         if rc_file_path and os.path.exists(rc_file_path):
             try: os.remove(rc_file_path)
             except: pass
-            
+
         compile_button.config(state="normal")
         status_label.config(text="")
 
@@ -257,7 +271,7 @@ optimization_var = tk.StringVar(value="-O2")
 
 for var in (mingw_path_var, source_var, lang_var, gui_var, include_opengl_var, custom_name_strvar, custom_path_strvar, icon_strvar, optimization_var):
     var.trace_add("write", update_preview)
-    
+
 mingw_path_var.trace_add("write", save_mingw_path)
 
 
